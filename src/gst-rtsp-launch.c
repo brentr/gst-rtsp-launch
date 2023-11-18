@@ -24,19 +24,32 @@
 
 #define DEFAULT_RTSP_PORT "8554"
 #define DEFAULT_ENDPOINT "video"
-#define DEFAULT_DISABLE_RTCP FALSE
 
 static char *port = (char *) DEFAULT_RTSP_PORT;
 static char *mount = (char *) "/" DEFAULT_ENDPOINT;
-static gboolean disable_rtcp = DEFAULT_DISABLE_RTCP;
+static char *retransmitTime = NULL; //do-retransmission and set time (ms)
+static char *latency = NULL;        //override default of 200ms
+static char *profile = NULL;        //default: 'AVP'
+
+static gboolean disable_rtcp = FALSE;
+static gboolean *disable_rateControl = FALSE;
 
 static GOptionEntry entries[] = {
   {"port", 'p', 0, G_OPTION_ARG_STRING, &port,
       "Port to listen on (default: " DEFAULT_RTSP_PORT ")", "PORT"},
   {"endpoint", 'e', 0, G_OPTION_ARG_STRING, &mount+1,
-      "EndPoint (default: " DEFAULT_ENDPOINT ")", "EndPoint"},
+      "URI end point (default: " DEFAULT_ENDPOINT ")", "EndPoint"},
+  {"rtp-profile", 'r', 0, G_OPTION_ARG_STRING, &profile,
+      "Select RTP Profile (default: AVP)", "AVP|AVPF|SAVP|SAVPF"},
+  {"retransmission-time", 'r', 0, G_OPTION_ARG_STRING, &retransmitTime,
+      "Retain packets for possible retransmission\n"
+      "      <also enables retransmission>", "ms"},
+  {"latency", 'l', 0, G_OPTION_ARG_STRING, &latency,
+      "Alter default 200ms transmission delay", "ms"},
   {"disable-rtcp", '\0', 0, G_OPTION_ARG_NONE, &disable_rtcp,
-      "Whether RTCP should be disabled (default false)", NULL},
+      "Disable RTCP", NULL},
+  {"disable-rate-control", '\0', 0, G_OPTION_ARG_NONE, &disable_rateControl,
+      "Disable transmission rate control", NULL},
   {NULL}
 };
 
@@ -52,7 +65,7 @@ main (int argc, char *argv[])
 
   g_print("Launch RTSP Server -- 11/18/23 brent@mbari.org\n");
   optctx = g_option_context_new (
-    "(Launch Line)\n"
+    "\"Launch Line\"\n"
     "Example Launch Line:\
   \"( videotestsrc ! x264enc ! rtph264pay name=pay0 pt=96 )\"");
   g_option_context_add_main_entries (optctx, entries, NULL);
@@ -101,7 +114,7 @@ main (int argc, char *argv[])
   gst_rtsp_server_attach (server, NULL);
 
   /* start serving */
-  g_print ("stream ready at rtsp://127.0.0.1:%s%s\n", port, mount);
+  g_print ("Stream ready at rtsp://127.0.0.1:%s%s\n", port, mount);
   g_main_loop_run (loop);
 
   return 0;
