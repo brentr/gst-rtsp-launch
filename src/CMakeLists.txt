@@ -1,4 +1,4 @@
-add_executable(gst-rtsp-launch gst-rtsp-launch.cpp)
+add_executable(gst-rtsp-launch gst-rtsp-launch.c)
 target_link_libraries(gst-rtsp-launch PUBLIC GST_RTSP_SERVER)
 
 install(TARGETS gst-rtsp-launch
