@@ -29,26 +29,51 @@ static char *port = (char *) DEFAULT_RTSP_PORT;
 static char *mount = (char *) "/" DEFAULT_ENDPOINT;
 static char *retransmitTime = NULL; //do-retransmission and set time (ms)
 static char *latency = NULL;        //override default of 200ms
-static char *profileName = NULL;    //default: 'AVP'
+static char *profiles = NULL;       //default: 'AVP'
 
+#if GST_VERSION_MINOR >= 20
 static gboolean disable_rtcp = FALSE;
+#endif
 
 static GOptionEntry entries[] = {
   {"port", 'p', 0, G_OPTION_ARG_STRING, &port,
       "Port to listen on (default: " DEFAULT_RTSP_PORT ")", "PORT"},
   {"endpoint", 'e', 0, G_OPTION_ARG_STRING, &mount+1,
       "URI end point (default: " DEFAULT_ENDPOINT ")", "Sevice Name"},
-  {"rtsp-profile", 'r', 0, G_OPTION_ARG_STRING, &profileName,
-      "RTSP Profile (default: AVP)", "AVP|AVPF|SAVP|SAVPF"},
+  {"rtsp-profiles", 'r', 0, G_OPTION_ARG_STRING, &profiles,
+      "Allowed transfer profiles (default: AVP)", "AVP+AVPF+SAVP+SAVPF"},
   {"retransmission-time", 't', 0, G_OPTION_ARG_STRING, &retransmitTime,
       "Milliseconds to retain packets for retransmission\n"
       "      <also sets do-retransmission flag>", "ms"},
   {"latency", 'l', 0, G_OPTION_ARG_STRING, &latency,
       "Alter default 200ms transmission delay", "ms"},
+#if GST_VERSION_MINOR >= 20
   {"disable-rtcp", '\0', 0, G_OPTION_ARG_NONE, &disable_rtcp,
       "Disable RTCP", NULL},
+#endif
   {NULL}
 };
+
+static char *parseProfile (char *base, GstRTSPProfile *result)
+/*
+ * Parse single profile pointed to by next
+ * returns pointer to first char not part of profile
+ * (non-zero) profile mask or'ed into *result if profile recognized
+ */
+{
+  char *cursor = base;
+  GstRTSPProfile profile;
+  if (toupper(*base) == 'S')
+    cursor++;
+  if (strncasecmp(cursor, "AVP", 3))
+    return cursor;
+  if (toupper(cursor[3]) == 'F')
+    profile = cursor++==base ? GST_RTSP_PROFILE_AVPF : GST_RTSP_PROFILE_SAVPF;
+  else
+    profile = cursor==base ? GST_RTSP_PROFILE_AVP : GST_RTSP_PROFILE_SAVP;
+  *result |= profile;
+  return cursor+3;
+}
 
 /* this timeout is periodically run to clean up the expired sessions from the
  * pool. This needs to be run explicitly currently but might be done
@@ -114,26 +139,25 @@ main (int argc, char *argv[])
   gst_rtsp_media_factory_set_launch (factory, argv[1]);
   gst_rtsp_media_factory_set_shared (factory, TRUE);
 
-  if (profileName) {
-    GstRTSPProfile profile;
-    char *cursor = profileName;
-    if (toupper(*profileName) == 'S')
-      cursor++;
-    if (strncasecmp(cursor, "AVP", 3)) {
-unknownProfile:
-        g_printerr("Unknown RTSP profile (\"%s\") specified\n", profileName);
+  if (profiles) {
+    GstRTSPProfile mask = 0;
+    char *cursor = profiles;
+    while (*cursor) {
+      GstRTSPProfile profile = 0;
+      cursor=parseProfile(cursor, &profile);
+      if (!profile) {
+badProfiles:
+        g_printerr("Unknown RTSP profiles (\"%s\") specified\n", profiles);
         return 3;
+      }
+      mask |= profile;
+      if (!*cursor)
+        break;
+      if (isalnum(*cursor))
+        goto badProfiles;
+      cursor++;
     }
-    if (toupper(cursor[3]) == 'F' && !cursor[4])
-      profile = cursor==profileName ?
-              GST_RTSP_PROFILE_AVPF : GST_RTSP_PROFILE_SAVPF;
-    else {
-      if (cursor[3])
-        goto unknownProfile;
-      profile = cursor==profileName ?
-               GST_RTSP_PROFILE_AVP : GST_RTSP_PROFILE_SAVP;
-    }
-    gst_rtsp_media_factory_set_profiles(factory, profile);
+    gst_rtsp_media_factory_set_profiles(factory, mask);
   }
 
   if (retransmitTime) {
@@ -156,7 +180,9 @@ unknownProfile:
     gst_rtsp_media_factory_set_latency(factory, latencyMs * GST_MSECOND);
   }
 
+#if GST_VERSION_MINOR >= 20
   gst_rtsp_media_factory_set_enable_rtcp (factory, !disable_rtcp);
+#endif
 
   g_print("Pipeline: %s\n", gst_rtsp_media_factory_get_launch(factory));
 
