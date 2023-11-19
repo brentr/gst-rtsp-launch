@@ -1,6 +1,6 @@
 /* GStreamer
  * Copyright (C) 2008 Wim Taymans <wim.taymans at gmail.com>
- *  revised:  11/18/23 brent@mbari.org
+ *  revised:  11/19/23 brent@mbari.org
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -28,7 +28,6 @@
 static char *port = (char *) DEFAULT_RTSP_PORT;
 static char *mount = (char *) "/" DEFAULT_ENDPOINT;
 static char *retransmitTime = NULL; //do-retransmission and set time (ms)
-static char *latency = NULL;        //override default of 200ms
 static char *profiles = NULL;       //default: 'AVP'
 
 #if GST_VERSION_MINOR >= 20
@@ -45,8 +44,6 @@ static GOptionEntry entries[] = {
   {"retransmission-time", 't', 0, G_OPTION_ARG_STRING, &retransmitTime,
       "Milliseconds to retain packets for retransmission\n"
       "      <also sets do-retransmission flag>", "ms"},
-  {"latency", 'l', 0, G_OPTION_ARG_STRING, &latency,
-      "Alter default 200ms transmission delay", "ms"},
 #if GST_VERSION_MINOR >= 20
   {"disable-rtcp", '\0', 0, G_OPTION_ARG_NONE, &disable_rtcp,
       "Disable RTCP", NULL},
@@ -170,14 +167,6 @@ badProfiles:
     gst_rtsp_media_factory_set_retransmission_time(
         factory, retransMs * GST_MSECOND);
     gst_rtsp_media_factory_set_do_retransmission(factory, TRUE);
-  }
-  if (latency) {
-    guint64 latencyMs = strtoull(latency, &end, 0);
-    if (*end || end == latency) {
-        g_printerr("Invalid latency (\"%s\") specified\n", latency);
-        return 5;
-    }
-    gst_rtsp_media_factory_set_latency(factory, latencyMs * GST_MSECOND);
   }
 
 #if GST_VERSION_MINOR >= 20
