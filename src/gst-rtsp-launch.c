@@ -18,8 +18,8 @@
  * Boston, MA 02110-1301, USA.
  */
 
+#include <ctype.h>
 #include <gst/gst.h>
-
 #include <gst/rtsp-server/rtsp-server.h>
 
 #define DEFAULT_RTSP_PORT "8554"
@@ -29,29 +29,41 @@ static char *port = (char *) DEFAULT_RTSP_PORT;
 static char *mount = (char *) "/" DEFAULT_ENDPOINT;
 static char *retransmitTime = NULL; //do-retransmission and set time (ms)
 static char *latency = NULL;        //override default of 200ms
-static char *profile = NULL;        //default: 'AVP'
+static char *profileName = NULL;    //default: 'AVP'
 
 static gboolean disable_rtcp = FALSE;
-static gboolean *disable_rateControl = FALSE;
 
 static GOptionEntry entries[] = {
   {"port", 'p', 0, G_OPTION_ARG_STRING, &port,
       "Port to listen on (default: " DEFAULT_RTSP_PORT ")", "PORT"},
   {"endpoint", 'e', 0, G_OPTION_ARG_STRING, &mount+1,
-      "URI end point (default: " DEFAULT_ENDPOINT ")", "EndPoint"},
-  {"rtp-profile", 'r', 0, G_OPTION_ARG_STRING, &profile,
-      "Select RTP Profile (default: AVP)", "AVP|AVPF|SAVP|SAVPF"},
-  {"retransmission-time", 'r', 0, G_OPTION_ARG_STRING, &retransmitTime,
-      "Retain packets for possible retransmission\n"
-      "      <also enables retransmission>", "ms"},
+      "URI end point (default: " DEFAULT_ENDPOINT ")", "Sevice Name"},
+  {"rtsp-profile", 'r', 0, G_OPTION_ARG_STRING, &profileName,
+      "RTSP Profile (default: AVP)", "AVP|AVPF|SAVP|SAVPF"},
+  {"retransmission-time", 't', 0, G_OPTION_ARG_STRING, &retransmitTime,
+      "Milliseconds to retain packets for retransmission\n"
+      "      <also sets do-retransmission flag>", "ms"},
   {"latency", 'l', 0, G_OPTION_ARG_STRING, &latency,
       "Alter default 200ms transmission delay", "ms"},
   {"disable-rtcp", '\0', 0, G_OPTION_ARG_NONE, &disable_rtcp,
       "Disable RTCP", NULL},
-  {"disable-rate-control", '\0', 0, G_OPTION_ARG_NONE, &disable_rateControl,
-      "Disable transmission rate control", NULL},
   {NULL}
 };
+
+/* this timeout is periodically run to clean up the expired sessions from the
+ * pool. This needs to be run explicitly currently but might be done
+ * automatically as part of the mainloop. */
+static gboolean
+timeout (GstRTSPServer * server)
+{
+  GstRTSPSessionPool *pool;
+
+  pool = gst_rtsp_server_get_session_pool (server);
+  gst_rtsp_session_pool_cleanup (pool);
+  g_object_unref (pool);
+
+  return TRUE;
+}
 
 int
 main (int argc, char *argv[])
@@ -62,6 +74,7 @@ main (int argc, char *argv[])
   GstRTSPMediaFactory *factory;
   GOptionContext *optctx;
   GError *error = NULL;
+  char *end;
 
   g_print("Launch RTSP Server -- 11/18/23 brent@mbari.org\n");
   optctx = g_option_context_new (
@@ -100,6 +113,49 @@ main (int argc, char *argv[])
   factory = gst_rtsp_media_factory_new ();
   gst_rtsp_media_factory_set_launch (factory, argv[1]);
   gst_rtsp_media_factory_set_shared (factory, TRUE);
+
+  if (profileName) {
+    GstRTSPProfile profile;
+    char *cursor = profileName;
+    if (toupper(*profileName) == 'S')
+      cursor++;
+    if (strncasecmp(cursor, "AVP", 3)) {
+unknownProfile:
+        g_printerr("Unknown RTSP profile (\"%s\") specified\n", profileName);
+        return 3;
+    }
+    if (toupper(cursor[3]) == 'F' && !cursor[4])
+      profile = cursor==profileName ?
+              GST_RTSP_PROFILE_AVPF : GST_RTSP_PROFILE_SAVPF;
+    else {
+      if (cursor[3])
+        goto unknownProfile;
+      profile = cursor==profileName ?
+               GST_RTSP_PROFILE_AVP : GST_RTSP_PROFILE_SAVP;
+    }
+    gst_rtsp_media_factory_set_profiles(factory, profile);
+  }
+
+  if (retransmitTime) {
+    guint64 retransMs = strtoull(retransmitTime, &end, 0);
+    if (*end || end == retransmitTime) {
+        g_printerr("Invalid retransmission time (\"%s\") specified\n",
+                    retransmitTime);
+        return 4;
+    }
+    gst_rtsp_media_factory_set_retransmission_time(
+        factory, retransMs * GST_MSECOND);
+    gst_rtsp_media_factory_set_do_retransmission(factory, TRUE);
+  }
+  if (latency) {
+    guint64 latencyMs = strtoull(latency, &end, 0);
+    if (*end || end == latency) {
+        g_printerr("Invalid latency (\"%s\") specified\n", latency);
+        return 5;
+    }
+    gst_rtsp_media_factory_set_latency(factory, latencyMs * GST_MSECOND);
+  }
+
   gst_rtsp_media_factory_set_enable_rtcp (factory, !disable_rtcp);
 
   g_print("Pipeline: %s\n", gst_rtsp_media_factory_get_launch(factory));
@@ -111,7 +167,13 @@ main (int argc, char *argv[])
   g_object_unref (mounts);
 
   /* attach the server to the default maincontext */
-  gst_rtsp_server_attach (server, NULL);
+  if (!gst_rtsp_server_attach (server, NULL)) {
+    g_print ("failed to attach the server\n");
+    return 6;
+  }
+
+  /* add a timeout for the session cleanup */
+  g_timeout_add_seconds (5, (GSourceFunc) timeout, server);
 
   /* start serving */
   g_print ("Stream ready at rtsp://127.0.0.1:%s%s\n", port, mount);
