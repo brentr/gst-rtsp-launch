@@ -72,6 +72,21 @@ static char *parseProfile (char *base, GstRTSPProfile *result)
   return cursor+3;
 }
 
+static void
+media_constructed (GstRTSPMediaFactory * factory, GstRTSPMedia * media)
+{
+  guint i, n_streams = gst_rtsp_media_n_streams (media);
+
+  for (i = 0; i < n_streams; i++) {
+    GstRTSPStream *stream = gst_rtsp_media_get_stream (media, i);
+    g_printerr("%d:%s retransmission_time = %ld\n", i,
+       gst_rtsp_stream_is_sender(stream) ? "Sender":"Receiver",
+       gst_rtsp_stream_get_retransmission_time(stream));
+  }
+  gst_rtsp_media_set_do_retransmission(media, TRUE);
+}
+
+
 /* this timeout is periodically run to clean up the expired sessions from the
  * pool. This needs to be run explicitly currently but might be done
  * automatically as part of the mainloop. */
@@ -98,7 +113,7 @@ main (int argc, char *argv[])
   GError *error = NULL;
   char *end;
 
-  g_print("Launch RTSP Server -- 11/18/23 brent@mbari.org\n");
+  g_print("Launch RTSP Server -- 11/21/23 brent@mbari.org\n");
   optctx = g_option_context_new (
     "\"Launch Line\"\n"
     "Example Launch Line:\
@@ -133,8 +148,6 @@ main (int argc, char *argv[])
    * any launch line works as long as it contains elements named pay%d. Each
    * element with pay%d names will be a stream */
   factory = gst_rtsp_media_factory_new ();
-  gst_rtsp_media_factory_set_launch (factory, argv[1]);
-  gst_rtsp_media_factory_set_shared (factory, TRUE);
 
   if (profiles) {
     GstRTSPProfile mask = 0;
@@ -166,13 +179,20 @@ badProfiles:
     }
     gst_rtsp_media_factory_set_retransmission_time(
         factory, retransMs * GST_MSECOND);
-    gst_rtsp_media_factory_set_do_retransmission(factory, TRUE);
   }
 
 #if GST_VERSION_MINOR >= 20
   gst_rtsp_media_factory_set_enable_rtcp (factory, !disable_rtcp);
 #endif
 
+  gst_rtsp_media_factory_set_launch (factory, argv[1]);
+  gst_rtsp_media_factory_set_shared (factory, TRUE);
+#if 0
+  g_signal_connect (factory, "media-constructed", (GCallback)
+      media_constructed, NULL);
+  g_signal_connect (factory, "media-configure", (GCallback)
+      media_constructed, NULL);
+#endif
   g_print("Pipeline: %s\n", gst_rtsp_media_factory_get_launch(factory));
 
   /* attach the mount url */
