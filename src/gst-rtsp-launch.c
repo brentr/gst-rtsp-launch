@@ -28,6 +28,7 @@
 static char *port = (char *) DEFAULT_RTSP_PORT;
 static char *mount = (char *) "/" DEFAULT_ENDPOINT;
 static char *retransmitTime = NULL; //do-retransmission and set time (ms)
+static char *latency = NULL;        //override default of 200ms
 static char *profiles = NULL;       //default: 'AVP'
 
 #if GST_VERSION_MINOR >= 20
@@ -39,11 +40,12 @@ static GOptionEntry entries[] = {
       "Port to listen on (default: " DEFAULT_RTSP_PORT ")", "PORT"},
   {"endpoint", 'e', 0, G_OPTION_ARG_STRING, &mount+1,
       "URI end point (default: " DEFAULT_ENDPOINT ")", "Sevice Name"},
-  {"rtsp-profiles", 'r', 0, G_OPTION_ARG_STRING, &profiles,
-      "Allowed transfer profiles (default: AVP)", "AVP+AVPF+SAVP+SAVPF"},
+  {"profiles", 'P', 0, G_OPTION_ARG_STRING, &profiles,
+      "Allowed RTSP profiles (default: AVP)", "AVP+AVPF+SAVP+SAVPF"},
   {"retransmission-time", 't', 0, G_OPTION_ARG_STRING, &retransmitTime,
-      "Milliseconds to retain packets for retransmission\n"
-      "      <also sets do-retransmission flag>", "ms"},
+      "Milliseconds to retain packets for retransmission", "ms"},
+  {"latency", 'l', 0, G_OPTION_ARG_STRING, &latency,
+      "Alter initial 200ms latency estimate", "ms"},
 #if GST_VERSION_MINOR >= 20
   {"disable-rtcp", '\0', 0, G_OPTION_ARG_NONE, &disable_rtcp,
       "Disable RTCP", NULL},
@@ -72,20 +74,28 @@ static char *parseProfile (char *base, GstRTSPProfile *result)
   return cursor+3;
 }
 
-static void
-media_constructed (GstRTSPMediaFactory * factory, GstRTSPMedia * media)
-{
-  guint i, n_streams = gst_rtsp_media_n_streams (media);
+static GstRTSPMedia *lastMedia = NULL;
 
+static void streamStats(GstRTSPMedia * media)
+{
+  guint i, n_streams = gst_rtsp_media_n_streams(media);
   for (i = 0; i < n_streams; i++) {
-    GstRTSPStream *stream = gst_rtsp_media_get_stream (media, i);
-    g_printerr("%d:%s retransmission_time = %ld\n", i,
-       gst_rtsp_stream_is_sender(stream) ? "Sender":"Receiver",
-       gst_rtsp_stream_get_retransmission_time(stream));
+    GstRTSPStream *stream = gst_rtsp_media_get_stream(media, i);
+    g_printerr("%s stream[%d].pt/rtx_pt=%d/%d\n",
+      gst_rtsp_stream_is_sender(stream)?"SRC":"SINK", i,
+      gst_rtsp_stream_get_pt(stream),
+      gst_rtsp_stream_get_retransmission_pt(stream));
   }
-  gst_rtsp_media_set_do_retransmission(media, TRUE);
+  if (gst_rtsp_media_get_do_retransmission(media))
+    g_printerr("Retransmission Enabled\n");
 }
 
+static void
+configureMedia (GstRTSPMediaFactory * factory, GstRTSPMedia * media)
+{
+  lastMedia=media;
+  streamStats(media);
+}
 
 /* this timeout is periodically run to clean up the expired sessions from the
  * pool. This needs to be run explicitly currently but might be done
@@ -98,6 +108,9 @@ timeout (GstRTSPServer * server)
   pool = gst_rtsp_server_get_session_pool (server);
   gst_rtsp_session_pool_cleanup (pool);
   g_object_unref (pool);
+
+  if(GST_IS_RTSP_MEDIA(lastMedia))
+    streamStats(lastMedia);
 
   return TRUE;
 }
@@ -113,7 +126,7 @@ main (int argc, char *argv[])
   GError *error = NULL;
   char *end;
 
-  g_print("Launch RTSP Server -- 11/21/23 brent@mbari.org\n");
+  g_print("Launch RTSP Server -- 11/22/23 brent@mbari.org\n");
   optctx = g_option_context_new (
     "\"Launch Line\"\n"
     "Example Launch Line:\
@@ -181,19 +194,24 @@ badProfiles:
         factory, retransMs * GST_MSECOND);
   }
 
+  if (latency) {
+    guint64 latencyMs = strtoull(latency, &end, 0);
+    if (*end || end == latency) {
+        g_printerr("Invalid latency (\"%s\") specified\n", latency);
+        return 5;
+    }
+    gst_rtsp_media_factory_set_latency(factory, latencyMs * GST_MSECOND);
+  }
+
 #if GST_VERSION_MINOR >= 20
   gst_rtsp_media_factory_set_enable_rtcp (factory, !disable_rtcp);
 #endif
 
   gst_rtsp_media_factory_set_launch (factory, argv[1]);
   gst_rtsp_media_factory_set_shared (factory, TRUE);
-#if 0
-  g_signal_connect (factory, "media-constructed", (GCallback)
-      media_constructed, NULL);
-  g_signal_connect (factory, "media-configure", (GCallback)
-      media_constructed, NULL);
-#endif
   g_print("Pipeline: %s\n", gst_rtsp_media_factory_get_launch(factory));
+  if (gst_rtsp_media_factory_get_do_retransmission(factory))
+    g_printerr("Retransmission Enabled\n");
 
   /* attach the mount url */
   gst_rtsp_mount_points_add_factory (mounts, mount, factory);
@@ -210,8 +228,14 @@ badProfiles:
   /* add a timeout for the session cleanup */
   g_timeout_add_seconds (5, (GSourceFunc) timeout, server);
 
+  /* prepare media after its configured */
+  g_signal_connect (factory, "media-configure",
+                      (GCallback) configureMedia, NULL);
+
   /* start serving */
   g_print ("Stream ready at rtsp://127.0.0.1:%s%s\n", port, mount);
+  if (gst_rtsp_media_factory_get_do_retransmission(factory))
+    g_printerr("Retransmission Enabled\n");
   g_main_loop_run (loop);
 
   return 0;
